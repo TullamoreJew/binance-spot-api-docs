@@ -1,0 +1,88 @@
+import ccxt
+import pandas as pd
+import time
+from ta.momentum import RSIIndicator
+from ta.trend import EMAIndicator
+
+# --- API připojení na TESTNET Binance ---
+binance = ccxt.binance({
+    'apiKey': 'TVŮJ_TESTNET_API_KLÍČ',
+    'secret': 'TVŮJ_TESTNET_SECRET_KLÍČ',
+    'enableRateLimit': True,
+})
+binance.set_sandbox_mode(True)  # Aktivace testovacího prostředí
+
+# --- Nastavení strategie ---
+symbols = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT']
+timeframe = '15m'
+amounts = {
+    'BTC/USDT': 0.001,
+    'ETH/USDT': 0.01,
+    'BNB/USDT': 0.1
+}
+rsi_period = 14
+ema_short = 9
+ema_long = 21
+take_profit_pct = 0.03    # +3 %
+stop_loss_pct = 0.015     # -1.5 %
+positions = {}  # uložené pozice
+
+# --- Funkce: načti tržní data ---
+def fetch_data(symbol):
+    ohlcv = binance.fetch_ohlcv(symbol, timeframe, limit=100)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['ema_short'] = EMAIndicator(df['close'], window=ema_short).ema_indicator()
+    df['ema_long'] = EMAIndicator(df['close'], window=ema_long).ema_indicator()
+    df['rsi'] = RSIIndicator(df['close'], window=rsi_period).rsi()
+    return df
+
+# --- Funkce: zadání obchodu ---
+def place_order(symbol, side, amount):
+    print(f"[{symbol}] → {side.upper()} order: {amount}")
+    order = binance.create_market_order(symbol, side, amount)
+    return order
+
+# --- Obchodní logika ---
+def trade():
+    global positions
+    for symbol in symbols:
+        try:
+            df = fetch_data(symbol)
+            last = df.iloc[-1]
+            price = last['close']
+            amount = amounts[symbol]
+
+            buy_signal = (
+                last['rsi'] < 30 and
+                last['ema_short'] > last['ema_long'] and
+                symbol not in positions
+            )
+
+            if buy_signal:
+                order = place_order(symbol, 'buy', amount)
+                positions[symbol] = {
+                    'entry_price': price,
+                    'amount': amount
+                }
+                print(f"💰 BUY {symbol} at {price:.2f}")
+
+            # Pokud držíme pozici, kontrolujeme výstup
+            if symbol in positions:
+                entry = positions[symbol]['entry_price']
+                pnl = (price - entry) / entry
+
+                if last['rsi'] > 70 or pnl >= take_profit_pct or pnl <= -stop_loss_pct:
+                    order = place_order(symbol, 'sell', amount)
+                    print(f"❌ SELL {symbol} at {price:.2f} | PnL: {pnl:.2%}")
+                    del positions[symbol]
+
+        except Exception as e:
+            print(f"[{symbol}] Chyba: {e}")
+            continue
+
+# --- Hlavní smyčka ---
+while True:
+    print("\n📈 Spouštím nový cyklus...\n")
+    trade()
+    time.sleep(60 * 5)  # čekej 5 minut
+
